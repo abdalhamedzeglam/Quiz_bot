@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from supabase import create_client
 from supabase.lib.client_options import ClientOptions
 
+import time
 import config
 
 log = logging.getLogger("quizbot.db")
@@ -103,9 +104,10 @@ def _load_all() -> Tuple[List[dict], List[dict]]:
     return _fetch_all("chapters"), _fetch_all("questions")
 
 
+_dirty = False   # True = آخر تحديث فشل، والذاكرة قد تكون قديمة
+
 async def refresh_content() -> bool:
-    """يعيد تحميل المحتوى. عند الفشل يبقى المحتوى القديم قيد الاستخدام."""
-    global _content, _content_ready
+    global _content, _content_ready, _dirty
     if not supabase:
         return False
     async with _refresh_lock:
@@ -113,18 +115,23 @@ async def refresh_content() -> bool:
             chapters, rows = await _run(_load_all)
         except Exception as e:
             log.error("refresh_content failed: %s", e)
+            _dirty = True
             return False
-        valid, invalid = [], 0
+
+        valid, invalid_ids = [], []
         for row in rows:
             q = normalize_question(row)
             if q:
                 valid.append(q)
             else:
-                invalid += 1
-        if invalid:
-            log.warning("تم تجاهل %d سؤالاً غير صالح (راجع schema.sql القسم 3)", invalid)
+                invalid_ids.append(row.get("id"))
+
+        if invalid_ids:
+            log.warning("تم تجاهل %d سؤالاً غير صالح، المعرّفات: %s", len(invalid_ids), invalid_ids)
+
         _content = Content(chapters, valid)
         _content_ready = True
+        _dirty = False
         return True
 
 
@@ -168,6 +175,11 @@ async def add_question(
         "correct_index": correct_index,
         "explanation": explanation or "",
     }
+
+    if normalize_question({**row, "id": 0}) is None:
+        log.error("add_question مرفوض: السؤال غير صالح")
+        return False
+
     try:
         await _run(lambda: supabase.table("questions").insert(row).execute())
     except Exception as e:
@@ -196,6 +208,12 @@ async def update_question(question_id: int, **fields) -> bool:
     clean_fields = {k: v for k, v in fields.items() if v is not None}
     if not clean_fields:
         return False
+
+    cur = _content.by_id.get(question_id)
+    if cur is None or normalize_question({**cur, **clean_fields}) is None:
+        log.error("update_question #%s مرفوض: النتيجة ستكون سؤالاً غير صالح %s", question_id, clean_fields)
+        return False
+
     try:
         await _run(lambda: supabase.table("questions").update(clean_fields).eq("id", question_id).execute())
     except Exception as e:
@@ -344,15 +362,15 @@ async def flush_loop() -> None:
 
 
 async def content_refresh_loop() -> None:
-    """
-    فحص احتياطي بفاصل طويل (CONTENT_REFRESH_SEC). لكن إن لم يكن المحتوى جاهزاً أو فشل آخر تحديث
-    يُعاد المحاولة كل 20 ثانية، حتى لا يبقى البوت بلا أسئلة ساعات بسبب تعثّر عابر في Supabase.
-    """
-    ok = _content_ready
+    """يفحص كل 6 ساعات كالمعتاد، لكن إذا حدث أي خطأ يعيد المحاولة كل 20 ثانية."""
+    last = time.monotonic()
     while True:
-        await asyncio.sleep(config.CONTENT_REFRESH_SEC if ok else 20)
+        await asyncio.sleep(20)
+        due = (not _content_ready) or _dirty or (time.monotonic() - last >= config.CONTENT_REFRESH_SEC)
+        if not due:
+            continue
         try:
-            ok = await refresh_content()
+            if await refresh_content():
+                last = time.monotonic()
         except Exception:
             log.exception("content_refresh_loop")
-            ok = False

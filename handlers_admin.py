@@ -193,6 +193,13 @@ async def _admin_route(call, uid: int, msg, p: List[str]) -> None:
 
     if cmd == "eq_rmimg":                                    # حذف الصورة فقط وتحويل السؤال لنصي
         qid, ch_id, i = int(p[1]), int(p[2]), int(p[3])
+        q = db.get_question(qid)
+        if not q:
+            await answer_cb(call.id, "⚠️ السؤال غير موجود", True)
+            return
+        if not (q.get("question_text") or "").strip():
+            await answer_cb(call.id, "⚠️ السؤال بلا نص! أضف نصاً أولاً ثم احذف الصورة.", True)
+            return
         ok = await db.update_question(qid, image_file_id="")
         await answer_cb(call.id, "🗑️ تم حذف الصورة بنجاح!" if ok else "❌ فشل التحديث")
         await _show_bank_question(msg, ch_id, i)
@@ -373,11 +380,13 @@ async def _show_bank_question(msg, ch_id: int, i: int) -> None:
 )
 async def on_admin_input(msg):
     uid, chat_id = msg.from_user.id, msg.chat.id
-    st = sessions.get_admin(uid)
-    if st is None or (msg.text or "").startswith("/"):
+    if (msg.text or "").startswith("/"):
         return
-    state, d = st["state"], st["data"]
     async with sessions.lock(("admin", uid)):
+        st = sessions.get_admin(uid)
+        if st is None:
+            return
+        state, d = st["state"], st["data"]
         try:
             if state == "W_CONTENT":
                 await _on_content(msg, st)
@@ -385,7 +394,6 @@ async def on_admin_input(msg):
                 await _on_options(msg, st)
             elif state == "W_EXPL":
                 await _on_explanation(msg, uid, d)
-            # --- حالات التعديل الجديدة ---
             elif state == "EQ_CONTENT":
                 await _on_edit_content(msg, uid, d)
             elif state == "EQ_OPTIONS":
@@ -556,7 +564,6 @@ async def _send_report(chat_id: int, ch_id: Optional[int]) -> None:
                       caption=f"#{r['q_id']} — خطأ {pct}% — الإجابة: {r.get('correct_text') or '—'}")
 
 
-
 async def _on_edit_content(msg, uid: int, d: dict) -> None:
     text = (msg.caption or msg.text or "").strip()
     img = msg.photo[-1].file_id if msg.photo else None
@@ -573,6 +580,16 @@ async def _on_edit_content(msg, uid: int, d: dict) -> None:
         )
         return
 
+    # فحص طول النص لمنع تجاوز حدود تيليجرام
+    if text and len(text) > MAX_QUESTION_CHARS:
+        err_kb = Markup()
+        err_kb.row(Btn("❌ إلغاء", callback_data=f"ad:bk:{d['ch']}:{d['i']}"))
+        await render_message(
+            msg.chat.id, d.get("mid"), d.get("is_photo", False),
+            f"⚠️ <b>خطأ:</b> نص السؤال طويل جداً ({len(text)} حرفاً). الحد الأقصى هو {MAX_QUESTION_CHARS} حرفاً.\nأعد إرساله مختصراً:", err_kb, None
+        )
+        return
+
     # تحديث الحقول المرسلة فقط دون مسح الحقول الأخرى
     fields = {}
     if text:
@@ -580,8 +597,17 @@ async def _on_edit_content(msg, uid: int, d: dict) -> None:
     if img:
         fields["image_file_id"] = img
 
-    await db.update_question(d["qid"], **fields)
+    ok = await db.update_question(d["qid"], **fields)
     sessions.clear_admin(uid)
+
+    if not ok:
+        err_kb = Markup()
+        err_kb.row(Btn("🔙 رجوع للبنك", callback_data=f"ad:bk:{d['ch']}:{d['i']}"))
+        await render_message(
+            msg.chat.id, d.get("mid"), d.get("is_photo", False),
+            "⚠️ <b>لم يُحفظ التعديل:</b> إما أن الاتصال تعثر، أو أن التعديل يجعل السؤال غير صالح.", err_kb, None
+        )
+        return
 
     # تحديث رسالة البنك الأصلية في مكانها
     qs = db.get_chapter_questions(d["ch"])
@@ -646,7 +672,6 @@ async def _on_edit_options(msg, st) -> None:
 
 
 async def _on_edit_explanation(msg, uid: int, d: dict) -> None:
-    # حذف رسالة الأدمن المدخلة فوراً
     await safe_delete(msg.chat.id, msg.message_id)
 
     if not msg.text:
@@ -663,8 +688,17 @@ async def _on_edit_explanation(msg, uid: int, d: dict) -> None:
         )
         return
 
-    await db.update_question(d["qid"], explanation=expl)
+    ok = await db.update_question(d["qid"], explanation=expl)
     sessions.clear_admin(uid)
+
+    if not ok:
+        err_kb = Markup()
+        err_kb.row(Btn("🔙 رجوع للبنك", callback_data=f"ad:bk:{d['ch']}:{d['i']}"))
+        await render_message(
+            msg.chat.id, d.get("mid"), d.get("is_photo", False),
+            "⚠️ <b>فشل حفظ الشرح:</b> يرجى المحاولة مرة أخرى لاحقاً.", err_kb, None
+        )
+        return
 
     qs = db.get_chapter_questions(d["ch"])
     if qs and 0 <= d["i"] < len(qs):

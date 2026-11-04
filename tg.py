@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import time
+import aiohttp
 from typing import Optional, Tuple
 
 from telebot.async_telebot import AsyncTeleBot

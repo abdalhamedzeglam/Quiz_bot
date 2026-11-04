@@ -212,22 +212,34 @@ def back_markup(target: str = "ad:home") -> Markup:
     return kb
 
 
-def build_bank_view(q: dict, i: int, n: int, ch_id: int) -> Tuple[str, Markup, Optional[str]]:
+def _bank_text(q: dict, i: int, n: int, cq: int, co: int, ce: int) -> str:
     kind = "صح/خطأ" if q["kind"] == "tf" else "اختيار من متعدد"
     lines = [f"🗂️ <b>{i + 1}/{n}</b> • #{q['id']} • {kind}"]
-    qt = clip(q.get("question_text"), 450)
+    qt = clip(q.get("question_text"), cq)
     lines.append(f"❓ {esc(qt)}" if qt else "❓ (سؤال بصورة)")
     opts = []
     for k, opt in enumerate(q["options"]):
         mark = "✅" if k == q["correct_index"] else "▫️"
-        opt_str = f"({label(k)})" if opt == label(k) else f"{label(k)}) {esc(clip(opt, 80))}"
+        opt_str = f"({label(k)})" if opt == label(k) else f"{label(k)}) {esc(clip(opt, co))}"
         opts.append(f"{mark} {opt_str}")
     lines.append("\n".join(opts))
     if q.get("explanation"):
-        lines.append(f"📝 {esc(clip(q['explanation'], 200))}")
-    text = "\n\n".join(lines)
+        lines.append(f"📝 {esc(clip(q['explanation'], ce))}")
+    return "\n\n".join(lines)
+
+
+def build_bank_view(q: dict, i: int, n: int, ch_id: int) -> Tuple[str, Markup, Optional[str]]:
+    limit = CAPTION_LIMIT if q.get("image_file_id") else TEXT_LIMIT
+    text = ""
+    for scale in (1.0, 0.7, 0.5, 0.3, 0.15):
+        text = _bank_text(q, i, n, max(int(450 * scale), 20), max(int(80 * scale), 10),
+                          max(int(200 * scale), 20))
+        if len(text) <= limit:
+            break
 
     kb = Markup()
+    # ... بقية الدالة (الأزرار) كما هي بدون تغيير
+
     nav = []
     if i > 0:
         nav.append(Btn("◀️", callback_data=f"ad:bk:{ch_id}:{i - 1}"))
