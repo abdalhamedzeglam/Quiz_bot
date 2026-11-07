@@ -16,8 +16,8 @@ _raw_admins = os.getenv("ADMIN_IDS") or os.getenv("ADMIN_ID", "")
 ADMIN_IDS = {int(x) for x in re.split(r"[,\s]+", _raw_admins) if x.strip().isdigit()}
 
 # Render يضبط هذا المتغير تلقائياً. إن كان فارغاً يعمل البوت بوضع polling محلياً.
-RENDER_EXTERNAL_URL = (os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
-PORT = int(os.getenv("PORT", "8080"))
+RENDER_EXTERNAL_URL = (os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+PORT = int(os.getenv("SERVER_PORT") or os.getenv("PORT", "8080"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET") or hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:48]
 
 
